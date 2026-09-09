@@ -60,6 +60,8 @@ dsh --patch ./my-overlay.yml
 | --- | --- | --- | --- |
 | `header` | string | `x-session-id` | 注入的 header 名；线上大小写不敏感 |
 | `value` | string | — | 固定值；不设 = 取当前调用的 harness session id |
+| `toolEndpoints` | string[] | `[]` | 工具执行期匹配的 URL 前缀。非空时，`tools/execute` 瀑布内的 fetch（例如工具里调用的网关 web-search Messages API）仅当 URL 以某前缀开头才注入 header——第三方工具目标（web_fetch 抓任意网页、GitHub、MCP 服务器等）不受影响。默认空 = 保持原有仅 LLM 注入行为 |
+| `overwriteHeaders` | string[] | `[]` | 允许本插件**覆盖**已有值的 header 名列表；未列出的头仍遵守"不覆盖"规则。某些官方 provider 会硬编码占位值（如 `dsh-web-search-deepseek` 发送 `x-opencode-session: dsh-web-search`），网关会当作缺失拒绝；把该头列入（`overwriteHeaders: [x-opencode-session]`）即可用真实的会话 id 替换占位值。大小写不敏感。 |
 
 ## 验证
 

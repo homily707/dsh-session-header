@@ -2,12 +2,21 @@
 # Install: dsh plugin --profile <name> add github:homily707/dsh-session-header
 #
 # Configuration:
-#   header - HTTP header name to inject (default x-session-id)
-#   value  - optional fixed value; unset means "the harness session id of the
-#            call in flight" (calls without one get no header)
+#   header           - HTTP header name to inject (default x-session-id)
+#   value            - optional fixed value; unset means "the harness session id
+#                      of the call in flight" (calls without one get no header)
+#   toolEndpoints    - URL prefixes matched during tool execution; non-empty
+#                      extends injection to gateway fetches inside a
+#                      tools/execute waterfall (see README)
+#   overwriteHeaders - header names this plugin may replace when already set,
+#                      e.g. a hard-coded placeholder from an official provider
 - insert:
     - id: session-header
       name: dsh-session-header
       config:
         header: x-session-id
         # value: my-fixed-session-id
+        # toolEndpoints:
+        #   - https://your-gateway.example.com/
+        # overwriteHeaders:
+        #   - x-opencode-session
