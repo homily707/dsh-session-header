@@ -68,12 +68,21 @@ export const Config = Schema.object({
 
 /**
  * Plugin entry. `config.header` names the header, `config.value` optionally
- * fixes its value; per call, the AsyncLocalStorage store carries both plus the
- * resolved value, and a present store marks "this is an LLM fetch".
+ * fixes its value; per call, the AsyncLocalStorage store carries the resolved
+ * value (plus the tool-phase gate), and a present store marks "this is an LLM
+ * fetch".
  */
 export function apply(ctx, config) {
   const als = new AsyncLocalStorage()
   const originalFetch = globalThis.fetch
+
+  // The Schema above already filled the defaults (the harness validates plugin
+  // config through it), so these are read once here rather than re-defaulted on
+  // every injection.
+  const { header, value: fixedValue, toolEndpoints, overwriteHeaders } = config
+  // Only one question is ever asked of `overwriteHeaders`: may we replace OUR
+  // header? Case-insensitive match, the same rule the wire uses.
+  const mayOverwrite = overwriteHeaders.some((name) => name.toLowerCase() === header.toLowerCase())
 
   // Pre-compile toolEndpoints into origin-anchored matchers so the whitelist
   // can never match a sibling domain: `https://gateway.example.com` must not
@@ -82,7 +91,7 @@ export function apply(ctx, config) {
   // boundary character so `/zen/go/v1` matches `/zen/go/v1/messages` but not
   // `/zen/go/v10`. Unparseable or non-http(s) prefixes are dropped (fail
   // closed: a broken prefix simply never matches, so no header is sent).
-  const endpointMatchers = (config.toolEndpoints ?? [])
+  const endpointMatchers = toolEndpoints
     .map((prefix) => {
       let parsed
       try {
@@ -121,6 +130,11 @@ export function apply(ctx, config) {
     })
   }
 
+  // Shared by both scopes: a configured value is sent verbatim, a live id
+  // loses the `session-` branding prefix, and no id at all means "no header".
+  const resolveValue = (id) =>
+    fixedValue ?? (id === undefined ? undefined : String(id).replace(/^session-/, ''))
+
   const patchedFetch = (input, init) => {
     const injection = als.getStore()
     if (injection === undefined || injection.value === undefined) {
@@ -129,7 +143,7 @@ export function apply(ctx, config) {
     // Tool-phase scopes carry the whitelist gate; skip fetches that do not
     // target one of the configured endpoints so the session id never leaks to
     // third-party hosts the tools talk to.
-    if (injection.match !== undefined && !urlMatchesEndpoint(input)) {
+    if (injection.toolPhase === true && !urlMatchesEndpoint(input)) {
       return originalFetch(input, init)
     }
     // Collect headers from both fetch() spellings: a Request object carries
@@ -138,17 +152,13 @@ export function apply(ctx, config) {
     if (init?.headers !== undefined) {
       for (const [key, value] of new Headers(init.headers)) headers.set(key, value)
     }
-    // Inject only when absent — unless the header is explicitly listed in
-    // `overwriteHeaders`, in which case the live session id replaces whatever
-    // placeholder value another layer (an official provider) hard-coded.
-    const overwriteList = injection.overwrite ?? []
-    if (
-      headers.has(injection.header) &&
-      !overwriteList.some((name) => name.toLowerCase() === injection.header.toLowerCase())
-    ) {
+    // Inject only when absent — unless `overwriteHeaders` lists our header, in
+    // which case the live session id replaces whatever placeholder value
+    // another layer (an official provider) hard-coded.
+    if (headers.has(header) && !mayOverwrite) {
       return originalFetch(input, init)
     }
-    headers.set(injection.header, injection.value)
+    headers.set(header, injection.value)
     // A bare Request input owns its headers; rebuild it so the original —
     // which may be reused by the caller — keeps arriving providers without us.
     if (input instanceof Request && init === undefined) {
@@ -175,13 +185,7 @@ export function apply(ctx, config) {
   ctx.on('llm/stream', async function* (options, next) {
     const inner = next()
     const iterator = inner[Symbol.asyncIterator]()
-    const scope = {
-      header: config.header,
-      value:
-        config.value ??
-        (options.sessionId !== undefined ? String(options.sessionId).replace(/^session-/, '') : undefined),
-      overwrite: config.overwriteHeaders ?? [],
-    }
+    const scope = { value: resolveValue(options.sessionId) }
     let exhausted = false
     try {
       while (true) {
@@ -208,7 +212,6 @@ export function apply(ctx, config) {
   // report their own). Cover the whole promise chain in a scope so every
   // fetch the tool awaits is a candidate — then let the whitelist decide.
   ctx.on('tools/execute', async (exec, next) => {
-    const endpoints = config.toolEndpoints ?? []
     const agentId = exec.agent?.id
     // Empty agent id (not just missing) also means "no session to report":
     // both scopes share the same no-value ⇒ no-header semantics.
@@ -216,17 +219,11 @@ export function apply(ctx, config) {
       agentId === undefined ||
       typeof agentId !== 'string' ||
       agentId.length === 0 ||
-      endpoints.length === 0
+      toolEndpoints.length === 0
     ) {
       return next()
     }
-    const scope = {
-      header: config.header,
-      value:
-        config.value ?? String(agentId).replace(/^session-/, ''),
-      match: endpoints,
-      overwrite: config.overwriteHeaders ?? [],
-    }
-    return als.run(scope, () => next())
+    // `toolPhase` turns on the whitelist gate for every fetch in this chain.
+    return als.run({ value: resolveValue(agentId), toolPhase: true }, () => next())
   })
 }

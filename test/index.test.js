@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { apply } from '../index.js'
+import { apply, Config } from '../index.js'
 
 /** Record every fetch the plugin (and the code under test) performs. */
 function installFetchRecorder() {
@@ -53,7 +53,9 @@ function makeContext() {
 function boot(t, config = {}) {
   const recorder = installFetchRecorder()
   const { ctx, handlers, disposers } = makeContext()
-  apply(ctx, config)
+  // Go through the Schema, the way the harness loads the plugin: defaults for
+  // toolEndpoints/overwriteHeaders/header come from Config, not from apply().
+  apply(ctx, Config(config))
   t.after(() => {
     for (const dispose of disposers) dispose?.()
     recorder.restore()
@@ -238,7 +240,7 @@ test('llm/stream: never overwrites a header someone else already set', async (t)
 test('unloading restores the fetch that was installed before apply', async (t) => {
   const recorder = installFetchRecorder()
   const { ctx, disposers } = makeContext()
-  apply(ctx, {})
+  apply(ctx, Config({}))
   const patched = globalThis.fetch
   assert.notEqual(patched, recorder.fn)
   for (const dispose of disposers) dispose?.()
